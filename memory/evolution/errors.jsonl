@@ -1,0 +1,2 @@
+{"timestamp": "2026-04-09T19:31:00.295243", "type": "execute_shell_command", "message": "Command failed with exit code 1", "context": {"command": "python3 -c \"import sys; sys.exit(1)\""}}
+{"timestamp": "2026-04-09T19:32:17.378568", "type": "path_logic_error", "message": "Script saves data to plugin dir instead of workspace", "context": {"note": "Fix BASE_DIR logic to use os.getcwd() or COPAW_WORKING_DIR"}}
