@@ -1,4 +1,4 @@
-__version__ = "3.7.0"
+__version__ = "4.0.0"
 
 import os
 import sys
@@ -17,14 +17,13 @@ except ImportError:
 
 from lib import skill_manager, user_modeler
 
-
-mcp = FastMCP("Evolution-Engine-v3.7.0")
-
+mcp = FastMCP("Evolution-Engine-v4.0.0")
 
 @mcp.tool()
 async def check_evolution_status(task_summary: str = "") -> dict:
     """
     Gatekeeper tool with Resilience (Retry Logic) and Zombie Prevention.
+    Checks for code changes without corresponding skill updates.
     """
     workspace = os.environ.get("COPAW_WORKING_DIR", os.getcwd())
     git_dir = os.path.join(workspace, ".git")
@@ -45,7 +44,6 @@ async def check_evolution_status(task_summary: str = "") -> dict:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
                 git_changes = stdout.decode().strip()
             except asyncio.TimeoutError:
-                # 🚨 Kill zombie and clean up FDs
                 try:
                     proc.kill()
                 except ProcessLookupError:
@@ -58,7 +56,7 @@ async def check_evolution_status(task_summary: str = "") -> dict:
                     return {"status": "🚨 BLOCK", "reason": "Git command timed out after 3 retries."}
                 await asyncio.sleep(2 ** attempt)
                 continue
-            break # Success
+            break
         except FileNotFoundError:
             return {"status": "🚨 BLOCK", "reason": "Git executable not found."}
         except Exception as e:
@@ -77,7 +75,7 @@ async def check_evolution_status(task_summary: str = "") -> dict:
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
         skills_changes = stdout.decode().strip()
-    except: pass # Failsafe
+    except: pass
 
     has_code_changes = bool(git_changes)
     has_skill_changes = bool(skills_changes)
@@ -86,10 +84,27 @@ async def check_evolution_status(task_summary: str = "") -> dict:
         return {
             "status": "🚨 BLOCK",
             "reason": "Code changes detected but no new/modified Skills found.",
-            "advice": "Create or update a Skill in skills/ directory to match code changes."
+            "advice": "Call 'create_skill' or 'update_skill' to persist your logic as an SOP."
         }
     return {"status": "✅ CLEAR", "reason": "Evolution status verified."}
 
+# ==========================================
+# 🧬 Genesis Tools (New in v4.0.0)
+# ==========================================
+
+@mcp.tool()
+def create_skill(name: str, description: str, content: str) -> dict:
+    """Create a new Skill SOP with version 1.0.0"""
+    return skill_manager.create_skill(name, description, content)
+
+@mcp.tool()
+def update_skill(name: str, content: str, bump_type: str = "patch") -> dict:
+    """Update an existing Skill SOP and auto-bump version"""
+    return skill_manager.update_skill(name, content, bump_type)
+
+# ==========================================
+# 📊 Telemetry Tools
+# ==========================================
 
 @mcp.tool()
 def track_usage(skill: str, success: bool) -> dict:
@@ -103,6 +118,10 @@ def get_skill_stats(skill: Optional[str] = None) -> dict:
 def audit_skills() -> dict:
     return skill_manager.audit_skills()
 
+# ==========================================
+# 👤 User Profiling Tools
+# ==========================================
+
 @mcp.tool()
 def extract_profile(conversation: list) -> dict:
     return user_modeler.update_profile(conversation)
@@ -114,7 +133,6 @@ def get_user_profile() -> dict:
 @mcp.tool()
 def reset_user_profile() -> dict:
     return user_modeler.clear_profile()
-
 
 if __name__ == "__main__":
     mcp.run()
