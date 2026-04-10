@@ -1,7 +1,8 @@
-__version__ = "3.5.0"
+__version__ = "3.5.1"
 
 import os
 import sys
+import asyncio
 import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,14 +17,15 @@ except ImportError:
 from lib import skill_manager, user_modeler
 
 
-mcp = FastMCP("Evolution-Engine-v3.5.0")
+mcp = FastMCP("Evolution-Engine-v3.5.1")
 
 
 @mcp.tool()
-def check_evolution_status(task_summary: str = "") -> dict:
+async def check_evolution_status(task_summary: str = "") -> dict:
     """
     Gatekeeper tool. Check if code changes match skill updates.
     Agent must call this before finishing complex tasks.
+    Now fully async to prevent blocking the MCP event loop.
     """
     workspace = os.environ.get("COPAW_WORKING_DIR", os.getcwd())
     git_dir = os.path.join(workspace, ".git")
@@ -32,28 +34,28 @@ def check_evolution_status(task_summary: str = "") -> dict:
         return {"status": "no_git", "reason": "Not a git repository"}
 
     try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=10,
+        proc = await asyncio.create_subprocess_exec(
+            "git", "status", "--porcelain",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workspace
         )
-        git_changes = result.stdout.strip()
-    except (subprocess.TimeoutExpired, subprocess.SubprocessError):
-        return {"status": "ERROR", "reason": "Git command failed"}
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        git_changes = stdout.decode().strip()
+    except (asyncio.TimeoutError, subprocess.SubprocessError):
+        return {"status": "ERROR", "reason": "Git command failed or timed out"}
 
     skills_changes = ""
     try:
-        skills_result = subprocess.run(
-            ["git", "status", "--porcelain", "skills/"],
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=10,
+        proc = await asyncio.create_subprocess_exec(
+            "git", "status", "--porcelain", "skills/",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workspace
         )
-        skills_changes = skills_result.stdout.strip()
-    except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        skills_changes = stdout.decode().strip()
+    except (asyncio.TimeoutError, subprocess.SubprocessError):
         pass
 
     has_code_changes = bool(git_changes)

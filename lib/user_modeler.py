@@ -1,4 +1,4 @@
-__version__ = "3.5.0"
+__version__ = "3.5.1"
 
 import json
 import os
@@ -13,11 +13,16 @@ _profile_lock = threading.RLock()
 PROFILE_PATH = os.path.join(
     os.path.dirname(__file__), "..", "data", "user_profile.json"
 )
-os.makedirs(os.path.dirname(PROFILE_PATH), exist_ok=True)
+# ⚠️ REMOVED top-level os.makedirs: moved to _atomic_write_json
 
 
 def _atomic_write_json(filepath: str, data: dict):
+    """Atomic write: Create dir if needed, write to tmp, then replace."""
     dir_path = os.path.dirname(filepath)
+    # Lazy directory creation
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path, exist_ok=True)
+
     fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -56,7 +61,7 @@ def _save_profile(profile: dict):
 
 def update_profile(conversation: list) -> dict:
     with _profile_lock:
-        profile = _load_profile()
+        profile = _load_profile()  # Lock re-entry safe
 
         profile["interaction_count"] = profile.get("interaction_count", 0) + len(
             conversation
@@ -98,7 +103,7 @@ def update_profile(conversation: list) -> dict:
         profile["topics"] = topics
         profile["preferences"] = preferences
 
-        _save_profile(profile)
+        _save_profile(profile)  # Lock re-entry safe
 
         return profile
 
@@ -108,13 +113,12 @@ def get_profile() -> dict:
 
 
 def clear_profile() -> dict:
-    with _profile_lock:
-        default_profile = {
-            "preferences": {},
-            "topics": {},
-            "interaction_count": 0,
-            "first_seen": datetime.now().isoformat(),
-            "last_updated": datetime.now().isoformat(),
-        }
-        _save_profile(default_profile)
-        return {"status": "Profile cleared", "profile": default_profile}
+    default_profile = {
+        "preferences": {},
+        "topics": {},
+        "interaction_count": 0,
+        "first_seen": datetime.now().isoformat(),
+        "last_updated": datetime.now().isoformat(),
+    }
+    _save_profile(default_profile)
+    return {"status": "Profile cleared", "profile": default_profile}

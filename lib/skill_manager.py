@@ -1,4 +1,4 @@
-__version__ = "3.5.0"
+__version__ = "3.5.1"
 
 import json
 import os
@@ -11,11 +11,16 @@ _stats_lock = threading.RLock()
 
 
 STATS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "usage_stats.json")
-os.makedirs(os.path.dirname(STATS_PATH), exist_ok=True)
+# ⚠️ REMOVED top-level os.makedirs: moved to _atomic_write_json for lazy initialization
 
 
 def _atomic_write_json(filepath: str, data: dict):
+    """Atomic write: Create dir if needed, write to tmp, then replace."""
     dir_path = os.path.dirname(filepath)
+    # Lazy directory creation
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path, exist_ok=True)
+
     fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -48,7 +53,7 @@ def _save_stats(stats: dict):
 
 def track_usage(skill: str, success: bool) -> dict:
     with _stats_lock:
-        stats = _load_stats()
+        stats = _load_stats()  # Lock re-entry safe (RLock)
 
         if skill not in stats["skills"]:
             stats["skills"][skill] = {
@@ -72,7 +77,7 @@ def track_usage(skill: str, success: bool) -> dict:
             round((failures / total) * 100, 2) if total > 0 else 0.0
         )
 
-        _save_stats(stats)
+        _save_stats(stats)  # Lock re-entry safe (RLock)
 
         return {
             "skill": skill,
