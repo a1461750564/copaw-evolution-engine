@@ -1,0 +1,12 @@
+{
+  "skills": {
+    "bad_skill": {
+      "total_calls": 10,
+      "successful_calls": 3,
+      "failed_calls": 7,
+      "fail_rate": 70.0,
+      "first_seen": "2026-04-10T13:18:47.221644"
+    }
+  },
+  "last_updated": "2026-04-10T13:18:47.222374"
+}
