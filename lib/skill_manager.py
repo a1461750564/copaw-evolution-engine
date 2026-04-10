@@ -1,4 +1,4 @@
-__version__ = "4.0.1"
+__version__ = "4.4.0"
 
 import json
 import os
@@ -7,8 +7,10 @@ import threading
 import time
 import atexit
 import re
+import shutil
+import yaml
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 # --- 核心架构：Write-Behind (内存缓存 + 异步刷盘) ---
 
@@ -26,7 +28,7 @@ def _get_workspace() -> str:
     return os.environ.get("COPAW_WORKING_DIR", DEFAULT_WORKSPACE)
 
 def _atomic_write_json(filepath: str, data: dict):
-    """原子写入：优化 TOCTOU，支持 NFS"""
+    """原子写入 JSON"""
     dir_path = os.path.dirname(filepath)
     try: os.makedirs(dir_path, exist_ok=True)
     except OSError: pass
@@ -35,6 +37,21 @@ def _atomic_write_json(filepath: str, data: dict):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, filepath)
+    except Exception:
+        if os.path.exists(tmp_path): os.unlink(tmp_path)
+        raise
+
+def _atomic_write_text(filepath: str, content: str):
+    """原子写入文本 (防止多 Agent 并发写入导致的数据损坏)"""
+    dir_path = os.path.dirname(filepath)
+    try: os.makedirs(dir_path, exist_ok=True)
+    except OSError: pass
+    
+    fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
         os.replace(tmp_path, filepath)
     except Exception:
         if os.path.exists(tmp_path): os.unlink(tmp_path)
@@ -81,124 +98,142 @@ _flush_thread.start()
 atexit.register(_force_flush)
 
 # ==========================================
-# 🧬 核心能力 II: Skill Lifecycle Management
+# 🧬 核心能力 II: Skill Lifecycle Management (v4.4.0 State-Consistent)
 # ==========================================
+
+def _validate_skill_name(name: str) -> str:
+    """🔒 安全校验：防止路径穿越 (SEALED)"""
+    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+        return "Invalid skill name. Only alphanumeric, dash, and underscore allowed."
+    if len(name) > 50:
+        return "Skill name too long."
+    return ""
+
+def _parse_yaml_frontmatter(content: str) -> Tuple[Dict[str, Any], str, str]:
+    """
+    🛡️ 使用 PyYAML 解析 (100% Robust)
+    返回: (metadata_dict, raw_header_string, body_string)
+    """
+    match = re.match(r"^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n", content)
+    if not match:
+        return {}, "", content
+    
+    raw_header = match.group(0)
+    body = content[match.end():]
+    header_content = match.group(1)
+    
+    try:
+        metadata = yaml.safe_load(header_content)
+        if not isinstance(metadata, dict): metadata = {}
+    except yaml.YAMLError:
+        return {}, raw_header, body
+        
+    return metadata, raw_header, body
+
+def _build_yaml_header(metadata: Dict[str, Any]) -> str:
+    """将字典重新构建为 YAML Header (PyYAML)"""
+    lines = ["---"]
+    for key, val in metadata.items():
+        # Use yaml.dump for safe quoting of strings with colons/special chars
+        val_str = yaml.dump({key: val}, default_flow_style=False, allow_unicode=True).strip()
+        lines.append(val_str)
+    lines.append("---")
+    lines.append("") 
+    return "\n".join(lines)
 
 def _bump_version(version_str: str, bump_type: str = "patch") -> str:
     """安全地增加语义化版本号"""
-    try:
-        match = re.search(r"(\d+)\.(\d+)\.(\d+)", version_str)
-        if match:
-            major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
-            if bump_type == "major": major += 1; minor = 0; patch = 0
-            elif bump_type == "minor": minor += 1; patch = 0
-            else: patch += 1
-            return f"{major}.{minor}.{patch}"
-    except: pass
-    return "1.0.0" # 兜底
+    match = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", str(version_str))
+    if match:
+        major, minor = int(match.group(1)), int(match.group(2))
+        patch = int(match.group(3)) if match.group(3) else 0
+        
+        if bump_type == "major": major += 1; minor = 0; patch = 0
+        elif bump_type == "minor": minor += 1; patch = 0
+        else: patch += 1
+        return f"{major}.{minor}.{patch}"
+    return "1.0.0"
 
 def create_skill(name: str, description: str, content: str, version: str = "1.0.0") -> dict:
-    """创建新技能 SOP (纯净模式：Header + Content)"""
+    """创建新技能 SOP (带安全校验 + 原子写入)"""
+    err = _validate_skill_name(name)
+    if err: return {"status": "error", "reason": err}
+    
     workspace = _get_workspace()
     skill_dir = os.path.join(workspace, "skills", name)
     file_path = os.path.join(skill_dir, "SKILL.md")
     
     if os.path.exists(file_path):
-        return {"status": "error", "reason": f"Skill '{name}' already exists. Use 'update_skill' instead."}
+        return {"status": "error", "reason": f"Skill '{name}' already exists."}
     
-    # 纯净 Header 生成
-    header = f"""---
-name: {name}
-description: {description}
-version: {version}
----
-
-"""
+    metadata = {"name": name, "description": description, "version": version}
+    header = _build_yaml_header(metadata)
     
     try:
         os.makedirs(skill_dir, exist_ok=True)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(header + content)
-        return {
-            "status": "success", 
-            "message": f"Skill '{name}' created.", 
-            "path": file_path,
-            "version": version
-        }
+        _atomic_write_text(file_path, header + "\n" + content)
+        return {"status": "success", "message": f"Skill '{name}' created.", "path": file_path}
     except Exception as e:
         return {"status": "error", "reason": str(e)}
 
-def update_skill(name: str, content: str, bump_type: str = "patch") -> dict:
+def update_skill(name: str, content: str, bump_type: str = "patch", force: bool = False) -> dict:
     """
-    智能更新技能 SOP：
-    1. 如果 content 包含 '---' 头：视为完整文件更新，自动 Bump Version。
-    2. 如果 content 不包含 '---' 头：视为正文更新，保留旧 Header 并 Bump Version。
+    🛡️ 智能更新 (v4.4.0 Robust)
+    1. PyYAML 解析
+    2. 原子写入
+    3. 版本化备份 (Versioned Backups)
     """
+    err = _validate_skill_name(name)
+    if err: return {"status": "error", "reason": err}
+    
     workspace = _get_workspace()
     file_path = os.path.join(workspace, "skills", name, "SKILL.md")
     
     if not os.path.exists(file_path):
-        return {"status": "error", "reason": f"Skill '{name}' not found. Use 'create_skill' instead."}
+        return {"status": "error", "reason": f"Skill '{name}' not found."}
     
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             old_content = f.read()
         
-        # 1. 解析旧版本
-        old_header_match = re.match(r"^(---\s*\n[\s\S]*?\n---\s*\n)", old_content)
-        if not old_header_match:
-            return {"status": "error", "reason": "Original file has invalid format (missing header)."}
-            
-        old_header = old_header_match.group(1)
-        ver_match = re.search(r"version:\s*['\"]?(\d+\.\d+\.\d+)['\"]?", old_header)
-        old_version = ver_match.group(1) if ver_match else "1.0.0"
-        new_version = _bump_version(old_version, bump_type)
+        # 解析旧内容
+        _, _, old_body = _parse_yaml_frontmatter(old_content)
         
-        # 2. 决定更新策略
-        final_content = ""
-        is_full_content = content.strip().startswith("---")
+        # 软拦截: 仅在 content 看起来像完整文件时进行激进检查
+        new_is_full = content.strip().startswith("---")
+        if new_is_full and len(content) < len(old_content) * 0.2 and not force:
+            return {"status": "warning", "reason": "Content significantly shorter. Pass force=True to bypass.", "data": {"new_content": content}}
+
+        metadata, _, _ = _parse_yaml_frontmatter(old_content)
+        old_version = metadata.get("version", "1.0.0")
         
-        if is_full_content:
-            # 策略 A: 全量更新 (用户提供完整内容)
-            final_content = content
-            # 检查是否有版本号
-            if re.search(r"version:", final_content):
-                # 替换版本号
-                final_content = re.sub(
-                    r"(version:\s*['\"]?)(\d+\.\d+\.\d+)(['\"]?)", 
-                    rf"\g<1>{new_version}\3", 
-                    final_content
-                )
-            else:
-                # 用户忘了写版本号，尝试插入到 Header 块中
-                close_match = re.search(r"\n---\s*\n", final_content)
-                if close_match:
-                    # 在最后一个 --- 之前插入
-                    idx = close_match.start()
-                    final_content = final_content[:idx] + f"\nversion: {new_version}\n" + final_content[idx:]
-        else:
-            # 策略 B: 仅正文更新 (保留旧 Header)
-            # 修改旧 Header 的版本号
-            if re.search(r"version:", old_header):
-                new_header = re.sub(
-                    r"(version:\s*['\"]?)(\d+\.\d+\.\d+)(['\"]?)", 
-                    rf"\g<1>{new_version}\3", 
-                    old_header
-                )
-            else:
-                # 旧文件也没版本号，插入一个
-                close_match = re.search(r"\n---\s*\n", old_header)
-                if close_match:
-                    idx = close_match.start()
-                    new_header = old_header[:idx] + f"\nversion: {new_version}\n" + old_header[idx:]
-                else:
-                    new_header = old_header
-            
-            final_content = new_header + "\n" + content
-            
-        # 3. 写入
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(final_content)
+        # 解析新内容
+        new_metadata = {}
+        new_body = content
+        if content.strip().startswith("---"):
+            new_metadata, _, new_body = _parse_yaml_frontmatter(content)
+        
+        metadata.update(new_metadata)
+        
+        # 版本化备份 (解决 .bak 被覆盖问题)
+        safe_version = str(old_version).replace(" ", "_")
+        backup_name = f"SKILL_{safe_version}.md"
+        backup_path = os.path.join(workspace, "skills", name, backup_name)
+        try: 
+            if not os.path.exists(backup_path):
+                shutil.copy2(file_path, backup_path)
+        except: pass
+        
+        # 自动升级版本号
+        new_version = _bump_version(metadata.get("version", "1.0.0"), bump_type)
+        metadata["version"] = new_version
+        
+        # 构建最终内容
+        final_header = _build_yaml_header(metadata)
+        final_content = final_header + new_body
+        
+        # 🔒 原子写入
+        _atomic_write_text(file_path, final_content)
             
         return {
             "status": "success", 
@@ -210,8 +245,140 @@ def update_skill(name: str, content: str, bump_type: str = "patch") -> dict:
     except Exception as e:
         return {"status": "error", "reason": str(e)}
 
+def rollback_skill(name: str, target_version: str = None) -> dict:
+    """
+    🔄 回滚技能 (Roll-Forward Logic)
+    为了避免版本冲突，我们不降版本号，而是将旧版本的内容应用到新版本号上。
+    例如: 从 v1.0.2 回滚到 v1.0.0 的内容 -> 实际保存为 v1.0.3
+    """
+    err = _validate_skill_name(name)
+    if err: return {"status": "error", "reason": err}
+    
+    workspace = _get_workspace()
+    skill_dir = os.path.join(workspace, "skills", name)
+    file_path = os.path.join(skill_dir, "SKILL.md")
+    
+    if not os.path.exists(file_path):
+        return {"status": "error", "reason": "Skill not found."}
+
+    # 找到要回滚的内容
+    if target_version:
+        safe_version = str(target_version).replace(" ", "_")
+        backup_name = f"SKILL_{safe_version}.md"
+        backup_path = os.path.join(skill_dir, backup_name)
+        
+        if not os.path.exists(backup_path):
+            return {"status": "error", "reason": f"Backup for v{target_version} not found."}
+            
+        with open(backup_path, "r", encoding="utf-8") as f:
+            backup_content = f.read()
+            
+        # 提取备份内容中的 Body，去掉旧 Header
+        _, _, old_body = _parse_yaml_frontmatter(backup_content)
+    else:
+        # Fallback: Find most recent backup
+        backups = [f for f in os.listdir(skill_dir) if f.startswith("SKILL_") and f.endswith(".md")]
+        if not backups: return {"status": "error", "reason": "No backups found."}
+        
+        backups.sort()
+        latest_backup = backups[-1]
+        backup_path = os.path.join(skill_dir, latest_backup)
+        
+        with open(backup_path, "r", encoding="utf-8") as f:
+            backup_content = f.read()
+        _, _, old_body = _parse_yaml_frontmatter(backup_content)
+        
+        target_version = "latest"
+
+    # Roll-Forward: 获取当前文件的元数据，并增加版本号
+    with open(file_path, "r", encoding="utf-8") as f:
+        current_content = f.read()
+    
+    current_metadata, _, _ = _parse_yaml_frontmatter(current_content)
+    current_version = current_metadata.get("version", "1.0.0")
+    
+    # 增加版本号，避免冲突 (v1.0.2 -> v1.0.3)
+    new_version = _bump_version(current_version, "patch")
+    current_metadata["version"] = new_version
+    
+    final_header = _build_yaml_header(current_metadata)
+    final_content = final_header + old_body
+    
+    try:
+        _atomic_write_text(file_path, final_content)
+        return {
+            "status": "success", 
+            "message": f"Rolled back content of {target_version} to new version {new_version}.",
+            "new_version": new_version
+        }
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
+
+def archive_skill(name: str) -> dict:
+    """🗑️ 归档/删除技能 (带纳秒时间戳防止覆盖)"""
+    err = _validate_skill_name(name)
+    if err: return {"status": "error", "reason": err}
+    
+    workspace = _get_workspace()
+    skill_dir = os.path.join(workspace, "skills", name)
+    
+    # 使用纳秒时间戳确保绝对唯一
+    timestamp = time.time_ns()
+    archive_dir = os.path.join(workspace, "skills", ".archived", f"{name}_{timestamp}")
+    
+    if not os.path.exists(skill_dir):
+        return {"status": "error", "reason": f"Skill '{name}' not found."}
+        
+    try:
+        os.makedirs(os.path.dirname(archive_dir), exist_ok=True)
+        shutil.move(skill_dir, archive_dir)
+        return {"status": "success", "message": f"Skill '{name}' archived to {name}_{timestamp}."}
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
+
+def list_skills() -> dict:
+    """👁️ 获取工作区内所有已安装的技能列表 (排除 .archived)"""
+    workspace = _get_workspace()
+    skills_dir = os.path.join(workspace, "skills")
+    
+    if not os.path.exists(skills_dir):
+        return {"status": "success", "skills": []}
+        
+    skills = []
+    for item in os.listdir(skills_dir):
+        if item.startswith("."): continue # Skip hidden folders
+        
+        skill_file = os.path.join(skills_dir, item, "SKILL.md")
+        if os.path.isdir(os.path.join(skills_dir, item)) and os.path.exists(skill_file):
+            try:
+                with open(skill_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                metadata, _, _ = _parse_yaml_frontmatter(content)
+                metadata["path"] = skill_file
+                skills.append(metadata)
+            except:
+                continue
+    return {"status": "success", "count": len(skills), "skills": skills}
+
+def read_skill(name: str) -> dict:
+    """📖 读取指定技能的完整内容"""
+    err = _validate_skill_name(name)
+    if err: return {"status": "error", "reason": err}
+    
+    workspace = _get_workspace()
+    file_path = os.path.join(workspace, "skills", name, "SKILL.md")
+    
+    if not os.path.exists(file_path):
+        return {"status": "error", "reason": f"Skill '{name}' not found."}
+        
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return {"status": "success", "content": f.read()}
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
+
 # ==========================================
-# 📊 核心能力 I: Telemetry (Telemetry & Audit)
+# 📊 核心能力 I: Telemetry
 # ==========================================
 
 def track_usage(skill: str, success: bool) -> dict:

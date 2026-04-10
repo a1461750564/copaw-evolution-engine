@@ -1,4 +1,4 @@
-__version__ = "4.0.1"
+__version__ = "4.2.0"
 
 import os
 import sys
@@ -17,13 +17,16 @@ except ImportError:
 
 from lib import skill_manager, user_modeler
 
-mcp = FastMCP("Evolution-Engine-v4.0.0")
+mcp = FastMCP("Evolution-Engine-v4.2.0")
+
+# ==========================================
+# 🛡️ Gatekeeper
+# ==========================================
 
 @mcp.tool()
 async def check_evolution_status(task_summary: str = "") -> dict:
     """
     Gatekeeper tool with Resilience (Retry Logic) and Zombie Prevention.
-    Checks for code changes without corresponding skill updates.
     """
     workspace = os.environ.get("COPAW_WORKING_DIR", os.getcwd())
     git_dir = os.path.join(workspace, ".git")
@@ -84,23 +87,47 @@ async def check_evolution_status(task_summary: str = "") -> dict:
         return {
             "status": "🚨 BLOCK",
             "reason": "Code changes detected but no new/modified Skills found.",
-            "advice": "Call 'create_skill' or 'update_skill' to persist your logic as an SOP."
+            "advice": "Use 'create_skill', 'update_skill', or 'list_skills' to manage SOPs."
         }
     return {"status": "✅ CLEAR", "reason": "Evolution status verified."}
 
 # ==========================================
-# 🧬 Genesis Tools (New in v4.0.0)
+# 🧬 Genesis Tools (Robust & Safe)
 # ==========================================
 
 @mcp.tool()
 def create_skill(name: str, description: str, content: str) -> dict:
-    """Create a new Skill SOP with version 1.0.0"""
+    """Create a new Skill SOP (v1.0.0). Validated for safety."""
     return skill_manager.create_skill(name, description, content)
 
 @mcp.tool()
-def update_skill(name: str, content: str, bump_type: str = "patch") -> dict:
-    """Update an existing Skill SOP and auto-bump version"""
-    return skill_manager.update_skill(name, content, bump_type)
+def update_skill(name: str, content: str, bump_type: str = "patch", force: bool = False) -> dict:
+    """
+    Update an existing Skill SOP.
+    - Supports full content update or incremental body update.
+    - Uses atomic write to prevent data corruption.
+    - Soft block on truncation (use force=True to bypass).
+    """
+    return skill_manager.update_skill(name, content, bump_type, force)
+
+@mcp.tool()
+def rollback_skill(name: str) -> dict:
+    """Rollback a skill to its previous version (.bak file)."""
+    return skill_manager.rollback_skill(name)
+
+# ==========================================
+# 👁️ Discovery Tools
+# ==========================================
+
+@mcp.tool()
+def list_skills() -> dict:
+    """List all available skills in the workspace."""
+    return skill_manager.list_skills()
+
+@mcp.tool()
+def read_skill(name: str) -> dict:
+    """Read the full content of a skill."""
+    return skill_manager.read_skill(name)
 
 # ==========================================
 # 📊 Telemetry Tools
