@@ -1,4 +1,4 @@
-__version__ = "4.0.0"
+__version__ = "4.0.1"
 
 import json
 import os
@@ -20,7 +20,6 @@ _shutdown_event = threading.Event()
 # 路径配置
 PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATS_PATH = os.path.join(PLUGIN_DIR, "data", "usage_stats.json")
-# 默认工作区路径 (如果没有环境变量兜底)
 DEFAULT_WORKSPACE = os.environ.get("COPAW_WORKING_DIR", os.getcwd())
 
 def _get_workspace() -> str:
@@ -42,7 +41,6 @@ def _atomic_write_json(filepath: str, data: dict):
         raise
 
 def _load_initial_state():
-    """启动时加载磁盘数据到内存"""
     global _stats_cache
     if os.path.exists(STATS_PATH):
         try:
@@ -52,7 +50,6 @@ def _load_initial_state():
             _stats_cache = {"skills": {}, "last_updated": None}
 
 def _flush_worker():
-    """后台刷盘守护线程 (使用极速浅拷贝)"""
     global _dirty
     while not _shutdown_event.wait(5.0):
         if _dirty:
@@ -67,7 +64,6 @@ def _flush_worker():
                 pass
 
 def _force_flush():
-    """强制刷盘 (用于进程退出)"""
     global _dirty
     if _dirty:
         try:
@@ -88,22 +84,21 @@ atexit.register(_force_flush)
 # 🧬 核心能力 II: Skill Lifecycle Management
 # ==========================================
 
-def _parse_version(version_str: str) -> Tuple[int, int, int]:
-    """解析语义化版本号 v1.2.3 -> (1, 2, 3)"""
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", version_str)
-    if match: return int(match.group(1)), int(match.group(2)), int(match.group(3))
-    return 0, 0, 0
-
 def _bump_version(version_str: str, bump_type: str = "patch") -> str:
-    """版本号自增"""
-    major, minor, patch = _parse_version(version_str)
-    if bump_type == "major": major += 1; minor = 0; patch = 0
-    elif bump_type == "minor": minor += 1; patch = 0
-    else: patch += 1
-    return f"{major}.{minor}.{patch}"
+    """安全地增加语义化版本号"""
+    try:
+        match = re.search(r"(\d+)\.(\d+)\.(\d+)", version_str)
+        if match:
+            major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
+            if bump_type == "major": major += 1; minor = 0; patch = 0
+            elif bump_type == "minor": minor += 1; patch = 0
+            else: patch += 1
+            return f"{major}.{minor}.{patch}"
+    except: pass
+    return "1.0.0" # 兜底
 
 def create_skill(name: str, description: str, content: str, version: str = "1.0.0") -> dict:
-    """创建新技能 SOP"""
+    """创建新技能 SOP (纯净模式：Header + Content)"""
     workspace = _get_workspace()
     skill_dir = os.path.join(workspace, "skills", name)
     file_path = os.path.join(skill_dir, "SKILL.md")
@@ -111,22 +106,19 @@ def create_skill(name: str, description: str, content: str, version: str = "1.0.
     if os.path.exists(file_path):
         return {"status": "error", "reason": f"Skill '{name}' already exists. Use 'update_skill' instead."}
     
-    # 自动生成 YAML Frontmatter + 内容
+    # 纯净 Header 生成
     header = f"""---
 name: {name}
 description: {description}
 version: {version}
 ---
 
-# 🧬 {name}
-
-{content}
 """
     
     try:
         os.makedirs(skill_dir, exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
-            f.write(header)
+            f.write(header + content)
         return {
             "status": "success", 
             "message": f"Skill '{name}' created.", 
@@ -137,7 +129,11 @@ version: {version}
         return {"status": "error", "reason": str(e)}
 
 def update_skill(name: str, content: str, bump_type: str = "patch") -> dict:
-    """更新现有技能 SOP (自动 Bump 版本)"""
+    """
+    智能更新技能 SOP：
+    1. 如果 content 包含 '---' 头：视为完整文件更新，自动 Bump Version。
+    2. 如果 content 不包含 '---' 头：视为正文更新，保留旧 Header 并 Bump Version。
+    """
     workspace = _get_workspace()
     file_path = os.path.join(workspace, "skills", name, "SKILL.md")
     
@@ -146,45 +142,73 @@ def update_skill(name: str, content: str, bump_type: str = "patch") -> dict:
     
     try:
         with open(file_path, "r", encoding="utf-8") as f:
-            original_content = f.read()
+            old_content = f.read()
         
-        # 解析旧版本
-        version_match = re.search(r"version:\s*['\"]?(\d+\.\d+\.\d+)['\"]?", original_content)
-        old_version = version_match.group(1) if version_match else "1.0.0"
+        # 1. 解析旧版本
+        old_header_match = re.match(r"^(---\s*\n[\s\S]*?\n---\s*\n)", old_content)
+        if not old_header_match:
+            return {"status": "error", "reason": "Original file has invalid format (missing header)."}
+            
+        old_header = old_header_match.group(1)
+        ver_match = re.search(r"version:\s*['\"]?(\d+\.\d+\.\d+)['\"]?", old_header)
+        old_version = ver_match.group(1) if ver_match else "1.0.0"
         new_version = _bump_version(old_version, bump_type)
         
-        # 替换版本号
-        new_content = re.sub(r"(version:\s*['\"]?)(\d+\.\d+\.\d+)(['\"]?)", rf"\g<1>{new_version}\3", original_content)
+        # 2. 决定更新策略
+        final_content = ""
+        is_full_content = content.strip().startswith("---")
         
-        # 替换内容 (保留头部，替换 Markdown Body)
-        # 这里简单策略：直接重写整个文件，保留头部版本信息，覆盖正文
-        # 更好的做法是只替换 --- 之后的内容，但重写更稳健
-        # 重新构建文件结构：
-        
-        header_match = re.match(r"(---[\s\S]*?---)", new_content)
-        if header_match:
-            final_header = header_match.group(1)
-            # 更新 header 里的 version 字段
-            final_header = re.sub(r"(version:\s*['\"]?)(\d+\.\d+\.\d+)(['\"]?)", rf"\g<1>{new_version}\3", final_header)
-            
-            # 写入新文件
-            final_file = f"{final_header}\n\n# 🧬 {name}\n\n{content}\n"
-            
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(final_file)
-            
-            return {
-                "status": "success", 
-                "message": f"Skill '{name}' updated.", 
-                "old_version": old_version,
-                "new_version": new_version
-            }
+        if is_full_content:
+            # 策略 A: 全量更新 (用户提供完整内容)
+            final_content = content
+            # 检查是否有版本号
+            if re.search(r"version:", final_content):
+                # 替换版本号
+                final_content = re.sub(
+                    r"(version:\s*['\"]?)(\d+\.\d+\.\d+)(['\"]?)", 
+                    rf"\g<1>{new_version}\3", 
+                    final_content
+                )
+            else:
+                # 用户忘了写版本号，尝试插入到 Header 块中
+                close_match = re.search(r"\n---\s*\n", final_content)
+                if close_match:
+                    # 在最后一个 --- 之前插入
+                    idx = close_match.start()
+                    final_content = final_content[:idx] + f"\nversion: {new_version}\n" + final_content[idx:]
         else:
-            return {"status": "error", "reason": "Invalid skill format (missing YAML header)."}
+            # 策略 B: 仅正文更新 (保留旧 Header)
+            # 修改旧 Header 的版本号
+            if re.search(r"version:", old_header):
+                new_header = re.sub(
+                    r"(version:\s*['\"]?)(\d+\.\d+\.\d+)(['\"]?)", 
+                    rf"\g<1>{new_version}\3", 
+                    old_header
+                )
+            else:
+                # 旧文件也没版本号，插入一个
+                close_match = re.search(r"\n---\s*\n", old_header)
+                if close_match:
+                    idx = close_match.start()
+                    new_header = old_header[:idx] + f"\nversion: {new_version}\n" + old_header[idx:]
+                else:
+                    new_header = old_header
+            
+            final_content = new_header + "\n" + content
+            
+        # 3. 写入
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(final_content)
+            
+        return {
+            "status": "success", 
+            "message": f"Skill '{name}' updated.", 
+            "old_version": old_version,
+            "new_version": new_version
+        }
             
     except Exception as e:
         return {"status": "error", "reason": str(e)}
-
 
 # ==========================================
 # 📊 核心能力 I: Telemetry (Telemetry & Audit)
