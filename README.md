@@ -11,30 +11,44 @@ This plugin empowers CoPaw agents to autonomously create, update, and version-co
 - **Automatic Versioning**: Automatically bumps semantic versions (e.g., `1.0.0` -> `1.0.1`) during skill updates, making evolution history visible.
 - **Workspace Aware**: Automatically routes skill creation to the correct workspace using `X-Agent-Id`.
 
-## 🚀 Installation
+## 📦 Installation
 
-1. Copy the `copaw-evolution-engine` folder to your CoPaw plugins directory:
-   ```bash
-   cp -r copaw-evolution-engine ~/.copaw/plugins/
-   ```
-2. Add to your `agent.json` MCP configuration:
+### Method 1: One-Line Script (Recommended)
+```bash
+git clone https://github.com/a1461750564/copaw-evolution-engine.git ~/.copaw/plugins/copaw-evolution-engine
+cd ~/.copaw/plugins/copaw-evolution-engine
+bash install.sh
+```
+*The installer will automatically detect your workspaces and safely inject the configuration.*
+
+### Method 2: Manual
+1. Clone to plugins dir.
+2. Add to `agent.json`:
    ```json
-   "evolution_engine": {
-     "enabled": true,
-     "command": "/path/to/python3",
-     "args": ["~/.copaw/plugins/copaw-evolution-engine/mcp_server.py"],
-     "env": {
-       "COPAW_WORKING_DIR": "/path/to/your/workspace"
-     }
+   "mcp_servers": {
+       "evolution_engine": {
+           "enabled": true,
+           "command": "python3",
+           "args": ["~/.copaw/plugins/copaw-evolution-engine/mcp_server.py"],
+           "env": { "COPAW_WORKING_DIR": "/path/to/workspace" }
+       }
    }
    ```
-3. Restart CoPaw. The agent will now have `create_skill` and `update_skill` tools.
 
-## 📂 Architecture
+## 🗑️ Uninstallation
+To cleanly remove the plugin:
+```bash
+cd ~/.copaw/plugins/copaw-evolution-engine
+bash uninstall.sh
+```
 
-Inspired by advanced agent frameworks like [Hermes Agent](https://github.com/NousResearch/hermes-agent), this plugin adopts a **"Framework-First"** philosophy:
-- Instead of hacking files directly, it delegates to the CoPaw Core API.
-- This guarantees that every evolved skill is scanned, indexed, and reloaded exactly as if it were installed from the official skill hub.
+## 🔍 Transparency & Security
+We believe in total transparency. See exactly what the installer modifies in **[MANIFEST.md](MANIFEST.md)**.
+
+**Summary**: 
+- ✅ Modifies only `agent.json` to add the plugin.
+- ✅ Creates a backup before changes.
+- ✅ No external dependencies, no hidden binaries.
 
 ## 🛠️ Available MCP Tools
 
