@@ -1,4 +1,4 @@
-__version__ = "3.7.1"
+__version__ = "3.7.0"
 
 import json
 import os
@@ -11,10 +11,10 @@ from datetime import datetime
 _profile_lock = threading.RLock()
 PROFILE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "user_profile.json")
 
-# --- 核心 I/O 辅助函数 (v3.7.1 Hardened) ---
+# --- 核心 I/O 辅助函数 (容灾增强) ---
 
 def _atomic_write_json(filepath, data):
-    """原子写入：优化 TOCTOU，支持 NFS"""
+    """原子写入"""
     dir_path = os.path.dirname(filepath)
     try: os.makedirs(dir_path, exist_ok=True)
     except OSError: pass
@@ -30,16 +30,16 @@ def _atomic_write_json(filepath, data):
 
 def _load_profile_or_quarantine():
     """
-    隔离与重置策略 (v3.7.1 Hardened)
-    1. 精准拦截 FileNotFoundError (Python 3 中它是 OSError 的子类)
-    2. 损坏文件隔离备份
-    3. 严重 I/O 错误抛出
+    隔离与重置策略 (Quarantine & Reset)
+    1. 文件不存在 -> 返回默认空配置
+    2. 文件损坏 -> 备份为 .corrupted.bak，返回默认空配置 (不中断服务)
+    3. I/O 错误 (权限/NFS) -> 抛出异常 (需人工干预)
     """
     try:
         with open(PROFILE_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        return None # 新用户，正常缺失
+        return None # 正常缺失
     except json.JSONDecodeError:
         # 灾难恢复：隔离损坏文件
         backup_path = f"{PROFILE_PATH}.corrupted.{int(time.time())}"
@@ -48,7 +48,7 @@ def _load_profile_or_quarantine():
         except: pass
         return "CORRUPTED" # 标记为损坏
     except OSError as e:
-        # 严重系统级错误 (权限/NFS 等)
+        # 严重系统级错误
         raise RuntimeError(f"Critical I/O error reading profile: {e}")
 
 def _get_default_profile():
@@ -60,13 +60,30 @@ def _get_default_profile():
         "last_updated": None
     }
 
+# --- 重型计算逻辑 (移出锁) ---
+
+def _analyze_conversation(conversation):
+    """纯 CPU 计算"""
+    topics = {}
+    prefs = {}
+    for entry in conversation:
+        content = entry.get("content", "") if isinstance(entry, dict) else str(entry)
+        cl = content.lower()
+        
+        if "code" in cl or "python" in cl or "debug" in cl:
+            topics["coding"] = topics.get("coding", 0) + 1
+        elif "write" in cl or "blog" in cl or "document" in cl:
+            topics["writing"] = topics.get("writing", 0) + 1
+            
+        if "short" in cl or "concise" in cl: prefs["response_length"] = "short"
+        elif "detailed" in cl or "explain" in cl: prefs["response_length"] = "detailed"
+    return topics, prefs
+
 # --- 公共接口 ---
 
 def update_profile(conversation):
-    # 1. 无锁计算 (假设 conversation 是纯数据，不做复杂分析)
-    # 为了演示 v3.7.1 修复，这里简化逻辑，重点是 I/O 安全
-    new_topics = {"general": 1}
-    new_prefs = {}
+    # 1. 无锁计算
+    new_topics, new_prefs = _analyze_conversation(conversation)
     
     with _profile_lock:
         raw = _load_profile_or_quarantine()
@@ -79,7 +96,7 @@ def update_profile(conversation):
             profile = raw
         
         # 2. 极速合并
-        profile["interaction_count"] = profile.get("interaction_count", 0) + 1
+        profile["interaction_count"] = profile.get("interaction_count", 0) + len(conversation)
         
         current_topics = profile.setdefault("topics", {})
         for k, v in new_topics.items():
