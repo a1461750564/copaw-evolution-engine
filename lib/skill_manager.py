@@ -11,6 +11,7 @@ import shutil
 import yaml
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any
+from pathlib import Path
 
 # --- 核心架构：Write-Behind (内存缓存 + 异步刷盘) ---
 
@@ -23,6 +24,17 @@ _shutdown_event = threading.Event()
 PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATS_PATH = os.path.join(PLUGIN_DIR, "data", "usage_stats.json")
 DEFAULT_WORKSPACE = os.environ.get("COPAW_WORKING_DIR", os.getcwd())
+
+def _sync_copaw_manifest(workspace: str):
+    """
+    🔗 Hot-Reload Bridge: 强制同步 CoPaw 核心 skill.json 清单
+    让 Agent 在下一轮对话立即识别新技能，无需重启软件。
+    """
+    try:
+        from copaw.agents.skills_manager import reconcile_workspace_manifest
+        reconcile_workspace_manifest(Path(workspace))
+    except Exception:
+        pass # 独立运行模式或非 Copaw 环境下忽略
 
 def _get_workspace() -> str:
     return os.environ.get("COPAW_WORKING_DIR", DEFAULT_WORKSPACE)
@@ -172,6 +184,10 @@ def create_skill(name: str, description: str, content: str, version: str = "1.0.
     try:
         os.makedirs(skill_dir, exist_ok=True)
         _atomic_write_text(file_path, header + "\n" + content)
+        
+        # 🔗 Trigger CoPaw Hot-Reload
+        _sync_copaw_manifest(workspace)
+        
         return {"status": "success", "message": f"Skill '{name}' created.", "path": file_path}
     except Exception as e:
         return {"status": "error", "reason": str(e)}
@@ -234,6 +250,9 @@ def update_skill(name: str, content: str, bump_type: str = "patch", force: bool 
         
         # 🔒 原子写入
         _atomic_write_text(file_path, final_content)
+        
+        # 🔗 Trigger CoPaw Hot-Reload (Manifest Update)
+        _sync_copaw_manifest(workspace)
             
         return {
             "status": "success", 
