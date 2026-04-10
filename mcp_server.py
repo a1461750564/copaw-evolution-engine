@@ -1,170 +1,94 @@
-"""
-CoPaw Evolution Engine MCP Server (v3.1.0)
-Changelog: https://github.com/a1461750564/copaw-evolution-engine/blob/main/CHANGELOG.md
-"""
-
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 import os
 import sys
-import json
-import http.client
-import subprocess
-import re
-import time
-import uuid
-from mcp.server.fastmcp import FastMCP
 
-# --- Constants ---
-COPAW_API_BASE = "http://127.0.0.1:8088"
-WORKING_DIR = os.environ.get("COPAW_WORKING_DIR", os.getcwd())
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Initialize MCP Server
-mcp = FastMCP("evolution-engine")
+from typing import Optional
 
-def get_agent_id():
-    """Extract Agent ID from working dir path."""
-    # Expected format: .../workspaces/<AgentID>/
-    match = re.search(r"workspaces/([^/]+)", WORKING_DIR)
-    return match.group(1) if match else "default"
+try:
+    from fastmcp import FastMCP
+except ImportError:
+    raise ImportError("fastmcp is required. Install with: pip install fastmcp")
 
-def get_api_headers():
-    return {
-        "Content-Type": "application/json",
-        "X-Agent-Id": get_agent_id()
-    }
+from lib import memory_crawler, skill_manager, user_modeler
 
-# --- Tools ---
+
+mcp = FastMCP("Hermes-Features-v3.2.0")
+
 
 @mcp.tool()
-def create_skill(name: str, description: str, content: str) -> str:
-    """Create a new skill via CoPaw API.
-    
-    Args:
-        name: Skill name (e.g., 'pdf-processing-sop')
-        description: Short summary
-        content: Full Markdown content (must start with YAML frontmatter)
+def hybrid_search(query: str, limit: int = 10) -> dict:
     """
-    payload = {
-        "name": name,
-        "description": description,
-        "content": content
-    }
-    
-    try:
-        conn = http.client.HTTPConnection("127.0.0.1", 8088)
-        conn.request("POST", "/api/skills", json.dumps(payload), get_api_headers())
-        res = conn.getresponse()
-        body = res.read().decode()
-        
-        if res.status == 200 or res.status == 201:
-            return f"✅ Skill '{name}' created successfully."
-        else:
-            return f"❌ Failed to create skill: {res.status} {body}"
-    except Exception as e:
-        return f"❌ API Error: {e}"
+    Hybrid search combining FTS5精准匹配 + LLM摘要.
+    """
+    return memory_crawler.search_hybrid(query, limit)
 
-def bump_version(content: str) -> str:
-    """Auto-increment version in YAML frontmatter."""
-    version_pattern = re.compile(r"(version:\s*)(\d+\.\d+\.\d+)")
-    
-    if not version_pattern.search(content):
-        # Inject v1.0.0 if missing
-        frontmatter_end = content.find("---", 1) # Skip first ---
-        if frontmatter_end != -1:
-            content = content[:frontmatter_end] + "\nversion: 1.0.0" + content[frontmatter_end:]
-        return content
-
-    def replacer(match):
-        prefix = match.group(1)
-        version = match.group(2)
-        parts = list(map(int, version.split('.')))
-        parts[-1] += 1  # Bump Patch
-        return f"{prefix}{'.'.join(map(str, parts))}"
-        
-    return version_pattern.sub(replacer, content)
 
 @mcp.tool()
-def update_skill(name: str, content: str) -> str:
-    """Update an existing skill. Auto-bumps version.
-    
-    Args:
-        name: Skill name to update
-        content: New Markdown content
+def index_session(path: str) -> dict:
     """
-    # 1. Bump Version
-    new_content = bump_version(content)
-    
-    payload = {
-        "name": name,
-        "content": new_content
-    }
-    
-    try:
-        conn = http.client.HTTPConnection("127.0.0.1", 8088)
-        conn.request("PUT", "/api/skills/save", json.dumps(payload), get_api_headers())
-        res = conn.getresponse()
-        body = res.read().decode()
-        
-        if res.status == 200:
-            return f"✅ Skill '{name}' updated. Version bumped."
-        else:
-            return f"❌ Failed to update skill: {res.status} {body}"
-    except Exception as e:
-        return f"❌ API Error: {e}"
+    Index a CoPaw jsonl log session into FTS5.
+    """
+    return memory_crawler.index_session(path)
+
 
 @mcp.tool()
-def check_evolution_status(task_summary: str = "") -> str:
-    """[Gatekeeper] Check if evolution requirements are met before finishing a task.
-    
-    Call this tool to verify if you need to create a skill based on recent changes.
-    
-    Args:
-        task_summary: Brief summary of what was done in this session.
+def get_index_stats() -> dict:
     """
-    if not task_summary:
-        return "⚠️ WARN: Please provide a summary of what you did to perform the check."
+    Get FTS5 index statistics.
+    """
+    return memory_crawler.get_stats()
 
-    # 1. Heuristic Check: Does this sound like an SOP?
-    triggers = ["fix", "bug", "sop", "workflow", "install", "script", "config", "update"]
-    is_sop_candidate = any(t in task_summary.lower() for t in triggers)
 
-    if not is_sop_candidate:
-        return f"✅ Audit Passed: Task '{task_summary}' seems routine, no SOP required."
+@mcp.tool()
+def track_usage(skill: str, success: bool) -> dict:
+    """
+    Track skill usage and success/failure.
+    """
+    return skill_manager.track_usage(skill, success)
 
-    # 2. Check Skill Inventory
-    skills_dir = os.path.join(WORKING_DIR, "skills")
-    has_new_skill = False
-    try:
-        # Check if skills dir was modified recently (last 5 mins)
-        if os.path.exists(skills_dir):
-            stat = os.stat(skills_dir)
-            if (time.time() - stat.st_mtime) < 300:
-                has_new_skill = True
-    except:
-        pass
 
-    # 3. Check Git Status
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=WORKING_DIR, capture_output=True, text=True, timeout=5
-        )
-        has_changes = bool(result.stdout.strip())
-    except:
-        has_changes = False
+@mcp.tool()
+def get_skill_stats(skill: Optional[str] = None) -> dict:
+    """
+    Get statistics for a specific skill or all skills.
+    """
+    return skill_manager.get_skill_stats(skill)
 
-    # Logic: If it's an SOP task AND we made changes BUT no new skill detected
-    if is_sop_candidate and has_changes and not has_new_skill:
-        return (
-            f"🚨 BLOCK: Evolution Requirement Not Met!\n"
-            f"- Task: {task_summary}\n"
-            f"- Status: Code changes detected, but NO new/updated skills found in `skills/`.\n"
-            f"- Action: You MUST call `create_skill` or `update_skill` before finishing."
-        )
-    
-    return f"✅ Audit Passed: Evolution requirements satisfied."
 
-# --- Start ---
+@mcp.tool()
+def audit_skills() -> dict:
+    """
+    Audit all skills - mark those with fail_rate > 30% as DEPRECATED.
+    """
+    return skill_manager.audit_skills()
+
+
+@mcp.tool()
+def extract_profile(conversation: list) -> dict:
+    """
+    Extract user profile from conversation history.
+    """
+    return user_modeler.update_profile(conversation)
+
+
+@mcp.tool()
+def get_user_profile() -> dict:
+    """
+    Get current user profile.
+    """
+    return user_modeler.get_profile()
+
+
+@mcp.tool()
+def reset_user_profile() -> dict:
+    """
+    Reset user profile to default.
+    """
+    return user_modeler.clear_profile()
+
+
 if __name__ == "__main__":
     mcp.run()

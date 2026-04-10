@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.2.0] - 2026-04-10
+**Theme**: "Hermes Parity" - Advanced Memory & Self-Healing
+> *Implemented sidecar architecture to bring FTS5 search and skill telemetry to CoPaw.*
+
+### 🚀 Added
+- **SQLite FTS5 Hybrid Search**: Real-time indexing of CoPaw `jsonl` logs with precision full-text search + LLM summarization.
+- **Skill Telemetry (Self-Healing)**: Tracks `usage_count` and `fail_rate`. Auto-flags skills as `⚠️ DEPRECATED` if failure rate > 30%.
+- **User Profile Extractor**: Analyzes conversation history to build a dynamic `user_profile.json`.
+- **Modular Architecture**: Refactored monolith `mcp_server.py` into `lib/` package (`memory_crawler`, `skill_manager`, `user_modeler`).
+
+### 🛡️ Security
+- **Thread Safety**: Added `threading.Lock()` to all JSON and SQLite operations to prevent data corruption under concurrency.
+- **Zero Dependencies**: Achieved Ollama API integration using ONLY Python `urllib` (no pip installs).
+
 ## [v3.1.0] - 2026-04-10
 **Theme**: "Gatekeeper" & Enforcement
 > *Addressed the critical issue where agents complete workflows without persisting SOPs.*
