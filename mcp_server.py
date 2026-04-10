@@ -1,10 +1,9 @@
 """
-CoPaw Evolution Engine MCP Server (v3.1)
-Features:
-- Framework-Native API (POST /skills, PUT /skills/save)
-- Auto Version Bumping
-- Gatekeeper Audit Tool (Check evolution status before task completion)
+CoPaw Evolution Engine MCP Server (v3.1.0)
+Changelog: https://github.com/a1461750564/copaw-evolution-engine/blob/main/CHANGELOG.md
 """
+
+__version__ = "3.1.0"
 
 import os
 import sys
