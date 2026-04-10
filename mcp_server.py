@@ -1,267 +1,171 @@
-#!/usr/bin/env python3
 """
-CoPaw Evolution Engine - MCP Server (v3.0 Framework-Native)
-
-This server provides tools for AI agents to evolve skills within the CoPaw framework.
-Instead of manipulating files directly, it uses CoPaw's official REST API to ensure
-full compliance with the framework's lifecycle (validation, security scanning, manifest reconciliation).
-
-Zero external dependencies. Uses only Python standard library.
+CoPaw Evolution Engine MCP Server (v3.1)
+Features:
+- Framework-Native API (POST /skills, PUT /skills/save)
+- Auto Version Bumping
+- Gatekeeper Audit Tool (Check evolution status before task completion)
 """
 
-import json
-import logging
 import os
-import re
 import sys
-import urllib.request
-import urllib.error
-from pathlib import Path
-from typing import Any, Dict, Optional, List
+import json
+import http.client
+import subprocess
+import re
+import time
+import uuid
+from mcp.server.fastmcp import FastMCP
 
-# --- Configuration ---
-COPAW_API_BASE = os.environ.get("COPAW_API_BASE", "http://127.0.0.1:8088/api")
-COPAW_WORKING_DIR = os.environ.get("COPAW_WORKING_DIR", "")
+# --- Constants ---
+COPAW_API_BASE = "http://127.0.0.1:8088"
+WORKING_DIR = os.environ.get("COPAW_WORKING_DIR", os.getcwd())
 
-def get_agent_id() -> str:
-    """Infer Agent ID from the workspace directory name."""
-    if COPAW_WORKING_DIR:
-        return Path(COPAW_WORKING_DIR).name
-    return "default"
+# Initialize MCP Server
+mcp = FastMCP("evolution-engine")
 
-logger = logging.getLogger("evolution_engine")
-logger.setLevel(logging.DEBUG)
+def get_agent_id():
+    """Extract Agent ID from working dir path."""
+    # Expected format: .../workspaces/<AgentID>/
+    match = re.search(r"workspaces/([^/]+)", WORKING_DIR)
+    return match.group(1) if match else "default"
 
-# --- Schema Definitions ---
-TOOLS = [
-    {
-        "name": "create_skill",
-        "description": "Create a new skill in the CoPaw workspace using the official API. The skill content MUST include valid YAML frontmatter with 'name' and 'description' fields.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "The skill name (e.g., 'pdf-processing-sop')."
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Short summary of what this skill does."
-                },
-                "content": {
-                    "type": "string",
-                    "description": "The full Markdown content for SKILL.md. MUST start with YAML frontmatter containing 'name' and 'description'."
-                }
-            },
-            "required": ["name", "description", "content"]
-        }
-    },
-    {
-        "name": "update_skill",
-        "description": "Update an existing skill's content via the official API.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "The name of the skill to update."
-                },
-                "content": {
-                    "type": "string",
-                    "description": "The new Markdown content for SKILL.md."
-                }
-            },
-            "required": ["name", "content"]
-        }
+def get_api_headers():
+    return {
+        "Content-Type": "application/json",
+        "X-Agent-Id": get_agent_id()
     }
-]
 
-def call_copaw_api(method: str, path: str, payload: Optional[Dict[str, Any]] = None, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    """Make a request to the CoPaw REST API."""
-    url = f"{COPAW_API_BASE}{path}"
-    data = json.dumps(payload).encode("utf-8") if payload else None
-    
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Content-Type", "application/json")
-    # Inject Agent ID for workspace routing
-    req.add_header("X-Agent-Id", get_agent_id())
-    
-    if extra_headers:
-        for k, v in extra_headers.items():
-            req.add_header(k, v)
+# --- Tools ---
 
+@mcp.tool()
+def create_skill(name: str, description: str, content: str) -> str:
+    """Create a new skill via CoPaw API.
+    
+    Args:
+        name: Skill name (e.g., 'pdf-processing-sop')
+        description: Short summary
+        content: Full Markdown content (must start with YAML frontmatter)
+    """
+    payload = {
+        "name": name,
+        "description": description,
+        "content": content
+    }
+    
     try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="ignore")
-        return {"error": True, "status": e.code, "message": body}
+        conn = http.client.HTTPConnection("127.0.0.1", 8088)
+        conn.request("POST", "/api/skills", json.dumps(payload), get_api_headers())
+        res = conn.getresponse()
+        body = res.read().decode()
+        
+        if res.status == 200 or res.status == 201:
+            return f"✅ Skill '{name}' created successfully."
+        else:
+            return f"❌ Failed to create skill: {res.status} {body}"
     except Exception as e:
-        return {"error": True, "message": str(e)}
+        return f"❌ API Error: {e}"
 
 def bump_version(content: str) -> str:
-    """Automatically increments the semantic version in YAML frontmatter."""
-    # Regex for version: major.minor.patch
-    ver_re = re.compile(r'^version:\s*"?(\d+)\.(\d+)\.(\d+)"?\s*$', re.MULTILINE)
-    match = ver_re.search(content)
+    """Auto-increment version in YAML frontmatter."""
+    version_pattern = re.compile(r"(version:\s*)(\d+\.\d+\.\d+)")
     
-    if match:
-        major, minor, patch = map(int, match.groups())
-        patch += 1
-        new_ver = f"{major}.{minor}.{patch}"
-        new_content = ver_re.sub(f'version: "{new_ver}"', content)
-        return new_content
-    else:
-        # If no version found, add it after description
-        # Look for description line
-        desc_re = re.compile(r'^(description:\s*.*\n)', re.MULTILINE)
-        match_desc = desc_re.search(content)
-        if match_desc:
-            insert_pos = match_desc.end()
-            return content[:insert_pos] + 'version: "1.0.0"\n' + content[insert_pos:]
+    if not version_pattern.search(content):
+        # Inject v1.0.0 if missing
+        frontmatter_end = content.find("---", 1) # Skip first ---
+        if frontmatter_end != -1:
+            content = content[:frontmatter_end] + "\nversion: 1.0.0" + content[frontmatter_end:]
+        return content
+
+    def replacer(match):
+        prefix = match.group(1)
+        version = match.group(2)
+        parts = list(map(int, version.split('.')))
+        parts[-1] += 1  # Bump Patch
+        return f"{prefix}{'.'.join(map(str, parts))}"
+        
+    return version_pattern.sub(replacer, content)
+
+@mcp.tool()
+def update_skill(name: str, content: str) -> str:
+    """Update an existing skill. Auto-bumps version.
+    
+    Args:
+        name: Skill name to update
+        content: New Markdown content
+    """
+    # 1. Bump Version
+    new_content = bump_version(content)
+    
+    payload = {
+        "name": name,
+        "content": new_content
+    }
+    
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", 8088)
+        conn.request("PUT", "/api/skills/save", json.dumps(payload), get_api_headers())
+        res = conn.getresponse()
+        body = res.read().decode()
+        
+        if res.status == 200:
+            return f"✅ Skill '{name}' updated. Version bumped."
         else:
-            # Fallback: just return content, API might fail or use default
-            return content
+            return f"❌ Failed to update skill: {res.status} {body}"
+    except Exception as e:
+        return f"❌ API Error: {e}"
 
-def validate_frontmatter(content: str) -> bool:
-    """Basic check to ensure content has valid frontmatter with name and description."""
-    match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
-    if not match:
-        return False
-    fm = match.group(1)
-    has_name = bool(re.search(r'^name:\s*.+', fm, re.MULTILINE))
-    has_desc = bool(re.search(r'^description:\s*.+', fm, re.MULTILINE))
-    return has_name and has_desc
+@mcp.tool()
+def check_evolution_status(task_summary: str = "") -> str:
+    """[Gatekeeper] Check if evolution requirements are met before finishing a task.
+    
+    Call this tool to verify if you need to create a skill based on recent changes.
+    
+    Args:
+        task_summary: Brief summary of what was done in this session.
+    """
+    if not task_summary:
+        return "⚠️ WARN: Please provide a summary of what you did to perform the check."
 
-def tool_create_skill(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    name = arguments.get("name", "")
-    description = arguments.get("description", "")
-    content = arguments.get("content", "")
-    
-    if not name or not description:
-        return {"error": "Name and description are required."}
-    if not validate_frontmatter(content):
-        return {"error": "SKILL.md content must start with YAML frontmatter containing 'name' and 'description'."}
-        
-    # Ensure frontmatter matches provided name/description
-    # CoPaw API will use frontmatter, so we must guarantee consistency
-    # (In a real scenario, we'd parse and patch, but for simplicity we trust the agent to provide correct content)
+    # 1. Heuristic Check: Does this sound like an SOP?
+    triggers = ["fix", "bug", "sop", "workflow", "install", "script", "config", "update"]
+    is_sop_candidate = any(t in task_summary.lower() for t in triggers)
 
-    payload = {
-        "name": name,
-        "content": content,
-        "enable": True,  # Automatically enable the evolved skill
-        "channels": ["all"]
-    }
-    
-    result = call_copaw_api("POST", "/skills", payload)
-    
-    if result.get("error"):
-        return {"status": "failed", "detail": result}
-    
-    return {
-        "status": "success",
-        "message": f"Skill '{name}' created and enabled via CoPaw API.",
-        "api_response": result
-    }
+    if not is_sop_candidate:
+        return f"✅ Audit Passed: Task '{task_summary}' seems routine, no SOP required."
 
-def tool_update_skill(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    name = arguments.get("name", "")
-    content = arguments.get("content", "")
-    
-    if not name:
-        return {"error": "Skill name is required."}
-    
-    # --- AUTO-EVOLUTION LOGIC ---
-    # Automatically bump version to make evolution visible
-    evolved_content = bump_version(content)
-    
-    payload = {
-        "name": name,
-        "content": evolved_content
-    }
-    
-    # Call API with Agent ID routing
-    result = call_copaw_api("PUT", "/skills/save", payload)
-    
-    if result.get("error"):
-        return {"status": "failed", "detail": result}
-        
-    return {
-        "status": "success",
-        "message": f"Skill '{name}' updated to new version via CoPaw API.",
-        "api_response": result
-    }
+    # 2. Check Skill Inventory
+    skills_dir = os.path.join(WORKING_DIR, "skills")
+    has_new_skill = False
+    try:
+        # Check if skills dir was modified recently (last 5 mins)
+        if os.path.exists(skills_dir):
+            stat = os.stat(skills_dir)
+            if (time.time() - stat.st_mtime) < 300:
+                has_new_skill = True
+    except:
+        pass
 
-# --- MCP Server Loop ---
-def main():
-    logger.info("Evolution Engine MCP Server v3.0 starting...")
-    
-    # Send initialization response
-    init_response = {
-        "jsonrpc": "2.0",
-        "id": 0,  # Will be overwritten by actual request ID
-        "result": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {
-                "tools": {}
-            },
-            "serverInfo": {
-                "name": "copaw-evolution-engine",
-                "version": "3.0.0"
-            }
-        }
-    }
-    
-    for line in sys.stdin:
-        try:
-            request = json.loads(line.strip())
-            method = request.get("method")
-            req_id = request.get("id")
-            
-            if method == "initialize":
-                # Respond to initialization
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "copaw-evolution-engine", "version": "3.0.0"}
-                    }
-                }
-                print(json.dumps(response), flush=True)
-                
-            elif method == "tools/list":
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {"tools": TOOLS}
-                }
-                print(json.dumps(response), flush=True)
-                
-            elif method == "tools/call":
-                tool_name = request["params"]["name"]
-                arguments = request["params"].get("arguments", {})
-                
-                if tool_name == "create_skill":
-                    result = tool_create_skill(arguments)
-                elif tool_name == "update_skill":
-                    result = tool_update_skill(arguments)
-                else:
-                    result = {"error": f"Unknown tool: {tool_name}"}
-                    
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "content": [{"type": "text", "text": json.dumps(result, indent=2)}]
-                    }
-                }
-                print(json.dumps(response), flush=True)
-                
-        except Exception as e:
-            logger.error(f"Error processing request: {e}")
+    # 3. Check Git Status
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=WORKING_DIR, capture_output=True, text=True, timeout=5
+        )
+        has_changes = bool(result.stdout.strip())
+    except:
+        has_changes = False
 
+    # Logic: If it's an SOP task AND we made changes BUT no new skill detected
+    if is_sop_candidate and has_changes and not has_new_skill:
+        return (
+            f"🚨 BLOCK: Evolution Requirement Not Met!\n"
+            f"- Task: {task_summary}\n"
+            f"- Status: Code changes detected, but NO new/updated skills found in `skills/`.\n"
+            f"- Action: You MUST call `create_skill` or `update_skill` before finishing."
+        )
+    
+    return f"✅ Audit Passed: Evolution requirements satisfied."
+
+# --- Start ---
 if __name__ == "__main__":
-    main()
+    mcp.run()
