@@ -269,24 +269,34 @@ def main():
 
     logger.info(f"Found {len(workspaces)} workspace(s): {[w.name for w in workspaces]}")
 
-    # 2. Ask user which workspace
-    print("\nSelect workspace to install:")
-    for i, ws in enumerate(workspaces):
-        print(f"  [{i}] {ws.name}")
-    print(f"  [a] All")
-
-    choice = input("Choice: ").strip().lower()
-
-    selected = []
-    if choice == "a":
+    # 2. Determine target workspaces
+    # Check for --all flag
+    if "--all" in sys.argv or "-a" in sys.argv:
         selected = workspaces
-    elif choice.isdigit():
-        idx = int(choice)
-        if 0 <= idx < len(workspaces):
-            selected = [workspaces[idx]]
+        logger.info(f"Flag --all detected. Targeting all {len(selected)} workspaces.")
+    elif "--yes" in sys.argv or "-y" in sys.argv:
+        # Default to first one if --yes but not --all (for quick install)
+        selected = [workspaces[0]]
+        logger.info(f"Flag --yes detected. Targeting default workspace: {selected[0].name}")
     else:
-        logger.error("Invalid choice.")
-        sys.exit(1)
+        # Interactive mode
+        print("\nSelect workspace to install:")
+        for i, ws in enumerate(workspaces):
+            print(f"  [{i}] {ws.name}")
+        print(f"  [a] All")
+
+        choice = input("Choice: ").strip().lower()
+
+        selected = []
+        if choice == "a":
+            selected = workspaces
+        elif choice.isdigit():
+            idx = int(choice)
+            if 0 <= idx < len(workspaces):
+                selected = [workspaces[idx]]
+        else:
+            logger.error("Invalid choice.")
+            sys.exit(1)
 
     # 3. Install
     success_count = 0
