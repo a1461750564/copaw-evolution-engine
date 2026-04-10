@@ -1,7 +1,8 @@
-__version__ = "3.2.0"
+__version__ = "3.5.0"
 
 import os
 import sys
+import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -12,34 +13,64 @@ try:
 except ImportError:
     raise ImportError("fastmcp is required. Install with: pip install fastmcp")
 
-from lib import memory_crawler, skill_manager, user_modeler
+from lib import skill_manager, user_modeler
 
 
-mcp = FastMCP("Hermes-Features-v3.2.0")
-
-
-@mcp.tool()
-def hybrid_search(query: str, limit: int = 10) -> dict:
-    """
-    Hybrid search combining FTS5精准匹配 + LLM摘要.
-    """
-    return memory_crawler.search_hybrid(query, limit)
+mcp = FastMCP("Evolution-Engine-v3.5.0")
 
 
 @mcp.tool()
-def index_session(path: str) -> dict:
+def check_evolution_status(task_summary: str = "") -> dict:
     """
-    Index a CoPaw jsonl log session into FTS5.
+    Gatekeeper tool. Check if code changes match skill updates.
+    Agent must call this before finishing complex tasks.
     """
-    return memory_crawler.index_session(path)
+    workspace = os.environ.get("COPAW_WORKING_DIR", os.getcwd())
+    git_dir = os.path.join(workspace, ".git")
 
+    if not os.path.exists(git_dir):
+        return {"status": "no_git", "reason": "Not a git repository"}
 
-@mcp.tool()
-def get_index_stats() -> dict:
-    """
-    Get FTS5 index statistics.
-    """
-    return memory_crawler.get_stats()
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        git_changes = result.stdout.strip()
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return {"status": "ERROR", "reason": "Git command failed"}
+
+    skills_changes = ""
+    try:
+        skills_result = subprocess.run(
+            ["git", "status", "--porcelain", "skills/"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        skills_changes = skills_result.stdout.strip()
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+        pass
+
+    has_code_changes = bool(git_changes)
+    has_skill_changes = bool(skills_changes)
+
+    if has_code_changes and not has_skill_changes:
+        return {
+            "status": "🚨 BLOCK",
+            "reason": "Code changes detected but no new/modified Skills found.",
+            "advice": "Create or update a Skill in skills/ directory to match code changes."
+        }
+    elif not has_code_changes and not has_skill_changes:
+        return {"status": "✅ CLEAR", "reason": "No code or skill changes detected"}
+    elif has_code_changes and has_skill_changes:
+        return {"status": "✅ CLEAR", "reason": "Both code and skill changes detected"}
+    else:
+        return {"status": "✅ CLEAR", "reason": "Skill changes only"}
 
 
 @mcp.tool()

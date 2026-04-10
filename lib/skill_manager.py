@@ -1,7 +1,8 @@
-__version__ = "3.2.0"
+__version__ = "3.5.0"
 
 import json
 import os
+import tempfile
 import threading
 from datetime import datetime
 from typing import Optional
@@ -13,6 +14,19 @@ STATS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "usage_stats.
 os.makedirs(os.path.dirname(STATS_PATH), exist_ok=True)
 
 
+def _atomic_write_json(filepath: str, data: dict):
+    dir_path = os.path.dirname(filepath)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, filepath)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+
 def _load_stats() -> dict:
     with _stats_lock:
         if not os.path.exists(STATS_PATH):
@@ -20,48 +34,52 @@ def _load_stats() -> dict:
         try:
             with open(STATS_PATH, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return {"skills": {}, "last_updated": None}
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Corrupted stats file: {e}") from e
+        except OSError as e:
+            raise IOError(f"Failed to read stats file: {e}") from e
 
 
 def _save_stats(stats: dict):
     with _stats_lock:
         stats["last_updated"] = datetime.now().isoformat()
-        with open(STATS_PATH, "w", encoding="utf-8") as f:
-            json.dump(stats, f, indent=2, ensure_ascii=False)
+        _atomic_write_json(STATS_PATH, stats)
 
 
 def track_usage(skill: str, success: bool) -> dict:
-    stats = _load_stats()
+    with _stats_lock:
+        stats = _load_stats()
 
-    if skill not in stats["skills"]:
-        stats["skills"][skill] = {
-            "total_calls": 0,
-            "successful_calls": 0,
-            "failed_calls": 0,
-            "fail_rate": 0.0,
-            "first_seen": datetime.now().isoformat(),
+        if skill not in stats["skills"]:
+            stats["skills"][skill] = {
+                "total_calls": 0,
+                "successful_calls": 0,
+                "failed_calls": 0,
+                "fail_rate": 0.0,
+                "first_seen": datetime.now().isoformat(),
+            }
+
+        skill_stats = stats["skills"][skill]
+        skill_stats["total_calls"] += 1
+        if success:
+            skill_stats["successful_calls"] += 1
+        else:
+            skill_stats["failed_calls"] += 1
+
+        total = skill_stats["total_calls"]
+        failures = skill_stats["failed_calls"]
+        skill_stats["fail_rate"] = (
+            round((failures / total) * 100, 2) if total > 0 else 0.0
+        )
+
+        _save_stats(stats)
+
+        return {
+            "skill": skill,
+            "total_calls": total,
+            "fail_rate": skill_stats["fail_rate"],
+            "status": "DEPRECATED ⚠️" if skill_stats["fail_rate"] > 30 else "ACTIVE",
         }
-
-    skill_stats = stats["skills"][skill]
-    skill_stats["total_calls"] += 1
-    if success:
-        skill_stats["successful_calls"] += 1
-    else:
-        skill_stats["failed_calls"] += 1
-
-    total = skill_stats["total_calls"]
-    failures = skill_stats["failed_calls"]
-    skill_stats["fail_rate"] = round((failures / total) * 100, 2) if total > 0 else 0.0
-
-    _save_stats(stats)
-
-    return {
-        "skill": skill,
-        "total_calls": total,
-        "fail_rate": skill_stats["fail_rate"],
-        "status": "DEPRECATED ⚠️" if skill_stats["fail_rate"] > 30 else "ACTIVE",
-    }
 
 
 def get_skill_stats(skill: Optional[str] = None) -> dict:
