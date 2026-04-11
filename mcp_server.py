@@ -1,165 +1,136 @@
-__version__ = "4.2.0"
-
-import os
+#!/usr/bin/env python3
+"""
+CoPaw Evolution Engine - MCP Server
+Exposes tools for agents to create and update skills.
+"""
 import sys
-import asyncio
-import subprocess
-import time
+import os
+import json
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from typing import Optional
+# Add project root to path to import lib
+sys.path.append(os.path.dirname(__file__))
 
 try:
-    from fastmcp import FastMCP
-except ImportError:
-    raise ImportError("fastmcp is required. Install with: pip install fastmcp")
+    from lib.skill_manager import create_skill, update_skill, list_skills
+except ImportError as e:
+    print(f"[MCP Error] Failed to import lib: {e}", file=sys.stderr)
+    sys.exit(1)
 
-from lib import skill_manager, user_modeler
+# ============================================================
+# Tool Definitions
+# ============================================================
+TOOLS = [
+    {
+        "name": "evolve_create_skill",
+        "description": "Create a new CoPaw skill from scratch. Used when an Agent learns a new capability."
+    },
+    {
+        "name": "evolve_update_skill",
+        "description": "Update an existing skill. Automatically handles versioning (v1.0.0 -> v1.0.1) and backups."
+    },
+    {
+        "name": "evolve_list_skills",
+        "description": "List all skills currently managed by the evolution engine."
+    }
+]
 
-mcp = FastMCP("Evolution-Engine-v4.2.0")
+# ============================================================
+# Tool Handlers
+# ============================================================
+def handle_create_skill(args):
+    name = args.get("name", "").lower().replace(" ", "-")
+    description = args.get("description", "Auto-evolved skill.")
+    content = args.get("content", "")
+    
+    if not name:
+        raise ValueError("Skill 'name' is required")
+    if not content:
+        raise ValueError("Skill 'content' is required")
+        
+    return create_skill(name=name, description=description, content=content)
 
-# ==========================================
-# 🛡️ Gatekeeper
-# ==========================================
+def handle_update_skill(args):
+    name = args.get("name", "").lower().replace(" ", "-")
+    content = args.get("content", "")
+    
+    if not name:
+        raise ValueError("Skill 'name' is required")
+    if not content:
+        raise ValueError("Skill 'content' is required")
+        
+    return update_skill(name=name, content=content)
 
-@mcp.tool()
-async def check_evolution_status(task_summary: str = "") -> dict:
-    """
-    Gatekeeper tool with Resilience (Retry Logic) and Zombie Prevention.
-    """
-    workspace = os.environ.get("COPAW_WORKING_DIR", os.getcwd())
-    git_dir = os.path.join(workspace, ".git")
+def handle_list_skills(args):
+    return list_skills()
 
-    if not os.path.exists(git_dir):
-        return {"status": "🚨 BLOCK", "reason": "Not a git repository."}
+TOOL_MAP = {
+    "evolve_create_skill": handle_create_skill,
+    "evolve_update_skill": handle_update_skill,
+    "evolve_list_skills": handle_list_skills
+}
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "git", "status", "--porcelain",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=workspace
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-                git_changes = stdout.decode().strip()
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                try:
-                    await proc.wait()
-                except: pass
-
-                if attempt == max_retries - 1:
-                    return {"status": "🚨 BLOCK", "reason": "Git command timed out after 3 retries."}
-                await asyncio.sleep(2 ** attempt)
-                continue
-            break
-        except FileNotFoundError:
-            return {"status": "🚨 BLOCK", "reason": "Git executable not found."}
-        except Exception as e:
-            if attempt == max_retries - 1:
-                return {"status": "🚨 BLOCK", "reason": f"Git check failed: {str(e)}"}
-            await asyncio.sleep(1)
-
-    # Skills check
-    skills_changes = ""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "status", "--porcelain", "skills/",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=workspace
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-        skills_changes = stdout.decode().strip()
-    except: pass
-
-    has_code_changes = bool(git_changes)
-    has_skill_changes = bool(skills_changes)
-
-    if has_code_changes and not has_skill_changes:
+# ============================================================
+# MCP Server Loop
+# ============================================================
+def handle_request(req: dict) -> dict:
+    method = req.get("method", "")
+    req_id = req.get("id")
+    
+    # Initialization handshake
+    if method == "initialize":
         return {
-            "status": "🚨 BLOCK",
-            "reason": "Code changes detected but no new/modified Skills found.",
-            "advice": "Use 'create_skill', 'update_skill', or 'list_skills' to manage SOPs."
+            "jsonrpc": "2.0", 
+            "id": req_id, 
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}}
+            }
         }
-    return {"status": "✅ CLEAR", "reason": "Evolution status verified."}
-
-# ==========================================
-# 🧬 Genesis Tools (Robust & Safe)
-# ==========================================
-
-@mcp.tool()
-def create_skill(name: str, description: str, content: str) -> dict:
-    """Create a new Skill SOP (v1.0.0). Validated for safety."""
-    return skill_manager.create_skill(name, description, content)
-
-@mcp.tool()
-def update_skill(name: str, content: str, bump_type: str = "patch", force: bool = False) -> dict:
-    """
-    Update an existing Skill SOP.
-    - Supports full content update or incremental body update.
-    - Uses atomic write to prevent data corruption.
-    - Soft block on truncation (use force=True to bypass).
-    """
-    return skill_manager.update_skill(name, content, bump_type, force)
-
-@mcp.tool()
-def rollback_skill(name: str) -> dict:
-    """Rollback a skill to its previous version (.bak file)."""
-    return skill_manager.rollback_skill(name)
-
-# ==========================================
-# 👁️ Discovery Tools
-# ==========================================
-
-@mcp.tool()
-def list_skills() -> dict:
-    """List all available skills in the workspace."""
-    return skill_manager.list_skills()
-
-@mcp.tool()
-def read_skill(name: str) -> dict:
-    """Read the full content of a skill."""
-    return skill_manager.read_skill(name)
-
-# ==========================================
-# 📊 Telemetry Tools
-# ==========================================
-
-@mcp.tool()
-def track_usage(skill: str, success: bool) -> dict:
-    return skill_manager.track_usage(skill, success)
-
-@mcp.tool()
-def get_skill_stats(skill: Optional[str] = None) -> dict:
-    return skill_manager.get_skill_stats(skill)
-
-@mcp.tool()
-def audit_skills() -> dict:
-    return skill_manager.audit_skills()
-
-# ==========================================
-# 👤 User Profiling Tools
-# ==========================================
-
-@mcp.tool()
-def extract_profile(conversation: list) -> dict:
-    return user_modeler.update_profile(conversation)
-
-@mcp.tool()
-def get_user_profile() -> dict:
-    return user_modeler.get_profile()
-
-@mcp.tool()
-def reset_user_profile() -> dict:
-    return user_modeler.clear_profile()
+    
+    # List available tools
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}}
+    
+    # Execute tool
+    if method == "tools/call":
+        tool_name = req["params"].get("name")
+        tool_args = req["params"].get("arguments", {})
+        
+        if tool_name in TOOL_MAP:
+            try:
+                result = TOOL_MAP[tool_name](tool_args)
+                return {
+                    "jsonrpc": "2.0", 
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]
+                    }
+                }
+            except Exception as e:
+                return {
+                    "jsonrpc": "2.0", 
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": f"Error: {str(e)}"}], 
+                        "isError": True
+                    }
+                }
+        else:
+            return {
+                "jsonrpc": "2.0", 
+                "id": req_id, 
+                "error": {"code": -32601, "message": f"Tool {tool_name} not found"}
+            }
+    
+    return None
 
 if __name__ == "__main__":
-    mcp.run()
+    print("[EvolutionEngine] MCP Server Started. Waiting for requests...", file=sys.stderr)
+    for line in sys.stdin:
+        try:
+            req = json.loads(line.strip())
+            resp = handle_request(req)
+            if resp:
+                print(json.dumps(resp), flush=True)
+        except Exception as e:
+            print(f"[MCP Error] {e}", file=sys.stderr)

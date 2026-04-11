@@ -1,0 +1,13 @@
+{
+  "id": "evolution_engine",
+  "name": "CoPaw Evolution Engine",
+  "version": "2.0.0",
+  "description": "A self-evolution plugin for CoPaw AI Agents. Allows agents to autonomously create, update, and version-control their skills via MCP.",
+  "author": "a1461750564",
+  "entry_point": "plugin.py",
+  "min_copaw_version": "0.1.0",
+  "meta": {
+    "homepage": "https://github.com/a1461750564/copaw-evolution-engine",
+    "tags": ["evolution", "mcp", "skill-manager"]
+  }
+}
