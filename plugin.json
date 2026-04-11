@@ -7,7 +7,7 @@
   "entry_point": "plugin.py",
   "min_copaw_version": "0.1.0",
   "meta": {
-    "homepage": "https://github.com/a1461750564/copaw-evolution-engine",
+    "homepage": "https://github.com/a1461750564/copaw-dream-engine",
     "tags": ["evolution", "mcp", "skill-manager"]
   }
 }

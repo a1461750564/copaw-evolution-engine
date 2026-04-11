@@ -1,4 +1,4 @@
-# 🌙 CoPaw Dream System (with Evolution Engine)
+# 🌙 CoPaw Dream Engine
 
 **Version:** 4.6.2 (Systematized Release)
 **Type:** CoPaw Plugin + Skill Bundle
@@ -16,7 +16,7 @@
 ```bash
 # 进入 CoPaw 插件目录
 cd ~/.copaw/plugins
-git clone https://github.com/a1461750564/copaw-evolution-engine.git
+git clone https://github.com/a1461750564/copaw-dream-engine.git
 ```
 
 ### 2. 运行安装脚本
