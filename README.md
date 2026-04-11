@@ -1,92 +1,93 @@
-# 🧬 CoPaw Evolution Engine
+# 🌙 CoPaw Dream System (with Evolution Engine)
 
-**Version:** 4.6.1  
-**Type:** CoPaw Plugin + MCP Server  
-**Inspired by:** NousResearch Hermes Agent (Self-improving Agents)
+**Version:** 4.6.2 (Systematized Release)
+**Type:** CoPaw Plugin + Skill Bundle
+**Inspired by:** NousResearch Hermes Agent (Self-improving Agents) & Karpathy's LLM Wiki.
 
-一个用于 CoPaw 智能体的**自进化引擎**。它不仅允许 Agent 在运行时创建和更新技能（Skills），还引入了**使用反馈**和**自然选择（归档）**机制，让 Agent 的知识库能够像生物一样优胜劣汰。
-
----
-
-## 🌟 核心特性
-
-1.  **自动进化 (Skill Evolution)**: Agent 可以在解决新问题后，调用 `evolve_create_skill` 将经验固化为永久技能。
-2.  **反馈闭环 (Feedback Loop)**: 通过 `evolve_report_usage` 记录技能的成功率，让 Agent 知道哪个工具好用。
-3.  **自然选择 (Pruning)**: 失败率高的技能会被自动标记或归档，防止“劣币驱逐良币”。
-4.  **无缝集成**: 符合 CoPaw 官方插件规范，通过 MCP 协议提供工具调用。
+一个用于 CoPaw 智能体的**自进化梦境系统**。它不仅允许 Agent 自动整理碎片记忆、更新结构化 Wiki，还能在运行时将 SOP 转化为永久技能 (Skill)，实现“记忆 -> 知识 -> 能力”的闭环。
 
 ---
 
-## 📦 安装 (CoPaw 插件)
+## 🚀 一键安装 (One-Click Install)
 
-### 1. 克隆插件到本地
+为了让任何 Agent 都能立刻拥有这套系统，我们提供了一键配置脚本。
 
+### 1. 克隆到插件目录
 ```bash
 # 进入 CoPaw 插件目录
-mkdir -p ~/.copaw/plugins
 cd ~/.copaw/plugins
-
-# 克隆仓库
 git clone https://github.com/a1461750564/copaw-evolution-engine.git
 ```
 
-### 2. 配置 Agent
+### 2. 运行安装脚本
+进入项目目录并运行安装脚本。脚本会自动：
+1.  **寻找 Agent**: 自动检测当前工作区。
+2.  **配置 MCP**: 将 `evolution_engine` 注入 `agent.json`。
+3.  **部署技能**: 将 `dream_system` 技能复制到工作区。
 
-在你的 CoPaw Agent 配置文件（通常是 `agent.json`）中添加 MCP 客户端配置：
-
-```json
-"mcp": {
-  "clients": {
-    "evolution_engine": {
-      "name": "evolution_engine",
-      "description": "CoPaw Evolution Engine MCP Server",
-      "enabled": true,
-      "transport": "stdio",
-      "command": "/Users/jiaye/.copaw/venv/bin/python3",  // 请替换为你的 venv 路径
-      "args": [
-        "/Users/jiaye/.copaw/plugins/copaw-evolution-engine/mcp_server.py"
-      ],
-      "cwd": "/Users/jiaye/.copaw/plugins/copaw-evolution-engine"
-    }
-  }
-}
+```bash
+cd ~/.copaw/plugins/copaw-evolution-engine
+/Users/jiaye/.copaw/venv/bin/python3 install.py
 ```
 
-### 3. 重启 CoPaw
-重启后，Agent 的工具列表中会出现 `evolve_*` 系列工具。
+> **注意**：请使用 CoPaw 环境下的 Python (`~/.copaw/venv/bin/python3`) 运行脚本，以确保路径正确。
 
 ---
 
-## 🛠️ MCP 工具列表
+## ✨ 核心特性
 
-Agent 可以调用以下工具来实现自我进化：
+1.  **自动梦境整理 (Dream Cycle)**: 
+    *   扫描 `compact_*.md` (系统摘要) 和 `*.md` (Agent 笔记)。
+    *   自动提炼知识，更新 `memory/wiki/` (Markdown 知识库)。
+    *   **双信源机制**: 结合客观事实与主观决策，避免遗忘。
 
-| 工具名称 | 描述 |
+2.  **技能自进化 (Self-Evolution)**:
+    *   Agent 在整理记忆时，若发现重复成功的流程 (SOP)，会自动调用 MCP 工具将其转化为**新技能**。
+    *   支持技能使用统计与自动归档 (失败率高的技能会被淘汰)。
+
+3.  **原生兼容**:
+    *   基于 `compact_*.md` (CoPaw 原生压缩摘要)，无需修改底层源码。
+    *   基于 CoPaw Cron (`0 3 * * *`) 定时触发，安全且省电。
+    *   **优雅降级**: 即使 MCP 未连接，梦境系统仍可作为纯文本整理器工作，不会报错崩溃。
+
+---
+
+## 🛠️ 架构与文件
+
+| 文件 | 作用 |
 | :--- | :--- |
-| **`evolve_create_skill`** | 从内容创建新技能。Agent 学习新 SOP 后调用。 |
-| **`evolve_update_skill`** | 更新现有技能（自动处理版本控制）。 |
-| **`evolve_report_usage`** | **反馈**。报告技能调用的成功/失败情况。 |
-| **`evolve_archive_skill`** | **淘汰**。归档过时或高频失败的技能。 |
-| **`evolve_list_skills`** | 列出当前管理的所有技能及其状态。 |
-| **`evolve_get_stats`** | 查看技能的使用统计（成功率、调用次数）。 |
+| **`install.py`** | **入口脚本**。自动配置环境，打通 MCP 与 Skill。 |
+| **`plugin.py`** | 插件生命周期入口 (符合 CoPaw 规范)。 |
+| **`mcp_server.py`** | 基于 `FastMCP` 的标准服务，提供 `evolve_*` 工具。 |
+| **`lib/`** | 核心逻辑库 (技能管理、统计)。 |
+| **`skills/dream_system/`** | 内置技能定义 (包含 v4.2 完整协议)。 |
 
 ---
 
-## 🏗️ 架构说明
+## 📖 使用指南
 
-本项目遵循 CoPaw 官方规范：
-*   **`plugin.json`**: 插件元数据。
-*   **`plugin.py`**: 插件生命周期入口（负责目录初始化）。
-*   **`mcp_server.py`**: 基于 `FastMCP` 构建的标准 MCP 服务。
-*   **`lib/`**: 核心逻辑库（原子写入、版本控制、冲突解决）。
+### 手动触发
+在 Agent 对话中输入：
+```
+/dream
+```
+Agent 将立即执行一次梦境整理，提取记忆并更新 Wiki。
+
+### 自动运行
+系统默认配置了每日凌晨 03:00 的 Cron 任务。Agent 会在空闲时自动“做梦”。
+
+### 查看结果
+- **Wiki 索引**: `memory/wiki/README.md`
+- **梦境日志**: `memory/dreams/YYYY-MM-DD.md`
+- **归档区**: `memory/archive/`
 
 ---
 
 ## 📝 版本历史
 
-- **v4.6.1**: 文档补全，代码清理，使用 FastMCP 协议，修复插件 API 兼容性。
+- **v4.6.2 (Current)**: 系统化重构。内置一键安装脚本，升级 Skill 至 v4.2 (增加降级策略)，完善项目结构。
+- **v4.6.1**: 文档补全，代码清理，修复 MCP 协议兼容性。
 - **v4.6.0**: 引入 Usage Tracking 和 Archive 机制。
-- **v4.5.1**: 初始核心库迁移 (Skill Manager)。
 
 ---
 

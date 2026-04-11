@@ -3,7 +3,7 @@ __pycache__
 *.pyo
 data/
 memory/
-skills/
+skills/evolved/
 .DS_Store
 .env
 venv/
