@@ -1,53 +1,28 @@
-#!/usr/bin/env python3
 """
-CoPaw Evolution Engine - Plugin Entry Point
-This module is loaded by CoPaw at startup.
+CoPaw Evolution Engine - Plugin Entry
 """
-import sys
 import os
-from pathlib import Path
+import json
+from copaw.plugins.base import PluginBase
 
-# Ensure 'lib' is in path for imports
-sys.path.append(str(Path(__file__).parent))
+class EvolutionPlugin(PluginBase):
+    name = "evolution_engine"
+    version = "4.6.0"
+    description = "Self-evolving skill engine with MCP tools for creation, feedback, and pruning."
 
-class EvolutionPlugin:
-    """Plugin entry point for CoPaw."""
-
-    async def register(self, api):
-        """
-        Register the plugin with CoPaw.
+    def on_load(self):
+        self.log.info(f"Loading {self.name} v{self.version}...")
         
-        Args:
-            api (PluginApi): The plugin API interface.
-        """
-        print("[EvolutionEngine] Initializing Plugin...", file=sys.stderr)
+        # Auto-init workspace
+        workspace = os.path.join(self.env.home_dir, "plugins", self.name)
+        os.makedirs(os.path.join(workspace, "skills"), exist_ok=True)
+        os.makedirs(os.path.join(workspace, "skills", ".archived"), exist_ok=True)
+        os.makedirs(os.path.join(workspace, "skills", ".backup"), exist_ok=True)
         
-        # 1. Workspace Initialization Hook
-        async def on_startup():
-            try:
-                # Determine workspace
-                ws_env = os.environ.get("COPAW_WORKING_DIR")
-                if ws_env:
-                    ws = Path(ws_env)
-                else:
-                    # Fallback logic usually not needed inside CoPaw context
-                    ws = Path.cwd()
+        self.log.info(f"Workspace ready: {workspace}")
 
-                # Create necessary directories
-                dirs = [
-                    ws / "memory" / "evolution",
-                    ws / "skills" / "evolved"
-                ]
-                for d in dirs:
-                    d.mkdir(parents=True, exist_ok=True)
-                    print(f"[EvolutionEngine] Directory ready: {d}", file=sys.stderr)
-                
-                print("[EvolutionEngine] Plugin initialized successfully.", file=sys.stderr)
-            except Exception as e:
-                print(f"[EvolutionEngine] Error during init: {e}", file=sys.stderr)
-
-        # Register the hook with high priority
-        api.register_startup_hook("init_evolution_engine", on_startup, priority=10)
-
-# Required export for CoPaw loader
-plugin = EvolutionPlugin()
+    def on_unload(self):
+        self.log.info(f"Unloading {self.name}")
+        
+    def on_mcp_ready(self):
+        self.log.info(f"{self.name} MCP server is ready.")
